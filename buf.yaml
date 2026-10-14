@@ -1,0 +1,10 @@
+# Buf workspace: lints the contract and checks breaking changes.
+version: v2
+modules:
+  - path: proto
+lint:
+  use:
+    - STANDARD
+breaking:
+  use:
+    - FILE

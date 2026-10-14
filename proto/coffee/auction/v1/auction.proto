@@ -1,0 +1,327 @@
+// =============================================================================
+//  Cafe Subasta — Specialty Coffee Micro-Lot Auction
+//  CONTRACT-FIRST: this file is the Single Source of Truth (SSOT) of the API.
+//  Server stubs, browser clients and bot clients are all generated from it.
+//
+//  All four gRPC call patterns are used on purpose:
+//    1. Unary              -> ListLots, GetLot, RegisterBidder, PlaceBid ...
+//    2. Server streaming   -> WatchFloor, WatchLot      (live updates to UI)
+//    3. Client streaming   -> SubmitAbsenteeBook        (bulk proxy bids)
+//    4. Bidirectional      -> BidderSession             (trading bots)
+//
+//  Money is always an integer number of US cents per pound (lb) to avoid
+//  floating point errors. Weights are integer pounds.
+// =============================================================================
+syntax = "proto3";
+
+package coffee.auction.v1;
+
+import "google/protobuf/timestamp.proto";
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum LotStatus {
+  LOT_STATUS_UNSPECIFIED = 0;
+  LOT_STATUS_SCHEDULED = 1;   // Visible, not yet accepting bids
+  LOT_STATUS_LIVE = 2;        // Accepting bids
+  LOT_STATUS_SOLD = 3;        // Closed, reserve met, has a winner
+  LOT_STATUS_UNSOLD = 4;      // Closed without meeting the reserve
+}
+
+enum CoffeeProcess {
+  COFFEE_PROCESS_UNSPECIFIED = 0;
+  COFFEE_PROCESS_WASHED = 1;
+  COFFEE_PROCESS_NATURAL = 2;
+  COFFEE_PROCESS_HONEY = 3;
+  COFFEE_PROCESS_ANAEROBIC = 4;
+  COFFEE_PROCESS_THERMAL_SHOCK = 5;
+}
+
+enum BidSource {
+  BID_SOURCE_UNSPECIFIED = 0;
+  BID_SOURCE_WEB = 1;         // A human using the browser
+  BID_SOURCE_BOT = 2;         // A trading bot over native gRPC
+  BID_SOURCE_PROXY = 3;       // Placed automatically by the proxy engine
+}
+
+enum BidRejectionReason {
+  BID_REJECTION_REASON_UNSPECIFIED = 0;
+  BID_REJECTION_REASON_LOT_NOT_LIVE = 1;
+  BID_REJECTION_REASON_BELOW_MINIMUM = 2;
+  BID_REJECTION_REASON_ALREADY_LEADING = 3;
+  BID_REJECTION_REASON_CREDIT_LIMIT_EXCEEDED = 4;
+  BID_REJECTION_REASON_INVALID_PROXY_MAX = 5;
+}
+
+// -----------------------------------------------------------------------------
+// Core messages
+// -----------------------------------------------------------------------------
+
+message Origin {
+  string farm = 1;
+  string producer = 2;
+  string region = 3;          // e.g. "Huila", "Cauca", "Sierra Nevada"
+  string municipality = 4;
+  int32 altitude_masl = 5;    // meters above sea level
+}
+
+message CuppingProfile {
+  double sca_score = 1;               // 80 - 100 (Specialty Coffee Association)
+  repeated string tasting_notes = 2;  // e.g. ["jasmine", "red berries"]
+  string cupped_by = 3;
+}
+
+message Lot {
+  string id = 1;
+  string code = 2;                     // Human friendly, e.g. "CS-0042"
+  string name = 3;
+  string variety = 4;                  // e.g. "Pink Bourbon"
+  CoffeeProcess process = 5;
+  Origin origin = 6;
+  CuppingProfile cupping = 7;
+  int32 weight_lb = 8;
+
+  LotStatus status = 9;
+  int32 starting_price_cents = 10;     // per lb
+  int32 current_price_cents = 11;      // per lb (== starting price if no bids)
+  int32 min_next_bid_cents = 12;       // per lb, computed by the increment policy
+  bool reserve_met = 13;               // The reserve value itself is secret
+  int32 bid_count = 14;
+  string leading_paddle = 15;          // Public paddle number, never the bidder id
+  google.protobuf.Timestamp starts_at = 16;
+  google.protobuf.Timestamp ends_at = 17;
+  int32 extension_count = 18;          // How many times anti-sniping fired
+}
+
+message Bid {
+  string id = 1;
+  string lot_id = 2;
+  string paddle = 3;
+  int32 amount_cents = 4;              // per lb
+  BidSource source = 5;
+  google.protobuf.Timestamp placed_at = 6;
+}
+
+message Bidder {
+  string id = 1;
+  string paddle = 2;                   // e.g. "P-107"
+  string display_name = 3;
+  string company = 4;
+  string country = 5;
+  int32 credit_limit_cents = 6;        // Total (not per lb)
+  int32 exposure_cents = 7;            // Committed on lots currently led
+  bool is_bot = 8;
+}
+
+// Attached as a gRPC error detail when PlaceBid fails for a business reason.
+message BidRejection {
+  BidRejectionReason reason = 1;
+  int32 min_next_bid_cents = 2;
+}
+
+// -----------------------------------------------------------------------------
+// Live events (server streaming + bidi)
+// -----------------------------------------------------------------------------
+
+message LotEvent {
+  Lot lot = 1;                          // Always the full fresh snapshot
+  oneof kind {
+    LotSnapshot snapshot = 10;          // First message of every stream
+    BidPlaced bid_placed = 11;
+    LotExtended extended = 12;
+    LotOpened opened = 13;
+    LotClosed closed = 14;
+  }
+}
+
+message LotSnapshot {
+  repeated Bid recent_bids = 1;
+}
+
+message BidPlaced {
+  Bid bid = 1;
+  string previous_leading_paddle = 2;
+}
+
+message LotExtended {
+  google.protobuf.Timestamp previous_ends_at = 1;
+  int32 extension_seconds = 2;
+}
+
+message LotOpened {}
+
+message LotClosed {
+  bool sold = 1;
+  string winning_paddle = 2;
+  int32 hammer_price_cents = 3;        // per lb
+  int32 total_value_cents = 4;         // hammer price * weight
+}
+
+message Heartbeat {
+  google.protobuf.Timestamp server_time = 1;
+}
+
+message WatchFloorResponse {
+  oneof kind {
+    LotEvent lot_event = 1;
+    Heartbeat heartbeat = 2;
+    FloorStats stats = 3;
+  }
+}
+
+message FloorStats {
+  int32 live_lots = 1;
+  int32 bids_last_minute = 2;
+  int32 connected_watchers = 3;
+  int64 total_sold_cents = 4;
+}
+
+// -----------------------------------------------------------------------------
+// Catalog service — read side
+// -----------------------------------------------------------------------------
+
+service CatalogService {
+  // Unary
+  rpc ListLots(ListLotsRequest) returns (ListLotsResponse);
+  // Unary
+  rpc GetLot(GetLotRequest) returns (GetLotResponse);
+}
+
+message ListLotsRequest {
+  // Empty = all statuses
+  repeated LotStatus statuses = 1;
+  int32 limit = 2;
+}
+message ListLotsResponse {
+  repeated Lot lots = 1;
+}
+
+message GetLotRequest {
+  string lot_id = 1;
+}
+message GetLotResponse {
+  Lot lot = 1;
+  repeated Bid bids = 2;               // Newest first
+}
+
+// -----------------------------------------------------------------------------
+// Bidder service — identity / paddles
+// -----------------------------------------------------------------------------
+
+service BidderService {
+  // Unary. Returns a session token to send as "authorization: Bearer <token>".
+  rpc RegisterBidder(RegisterBidderRequest) returns (RegisterBidderResponse);
+  // Unary. Requires authorization.
+  rpc GetMe(GetMeRequest) returns (GetMeResponse);
+}
+
+message RegisterBidderRequest {
+  string display_name = 1;
+  string company = 2;
+  string country = 3;
+  bool is_bot = 4;
+}
+message RegisterBidderResponse {
+  Bidder bidder = 1;
+  string token = 2;
+}
+
+message GetMeRequest {}
+message GetMeResponse {
+  Bidder bidder = 1;
+}
+
+// -----------------------------------------------------------------------------
+// Bidding service — write side + real time
+// -----------------------------------------------------------------------------
+
+service BiddingService {
+  // Unary. Requires authorization.
+  // If max_amount_cents is set, a PROXY bid is registered: the house bids for
+  // you, one increment at a time, up to that maximum.
+  rpc PlaceBid(PlaceBidRequest) returns (PlaceBidResponse);
+
+  // Server streaming: every event on every lot (the auction floor).
+  rpc WatchFloor(WatchFloorRequest) returns (stream WatchFloorResponse);
+
+  // Server streaming: events of a single lot.
+  rpc WatchLot(WatchLotRequest) returns (stream WatchLotResponse);
+
+  // Client streaming: a buyer uploads an "absentee book" (many proxy bids)
+  // in a single stream and gets one summary back. Requires authorization.
+  rpc SubmitAbsenteeBook(stream SubmitAbsenteeBookRequest) returns (SubmitAbsenteeBookResponse);
+
+  // Bidirectional streaming: a live trading session for bots.
+  // Client sends commands, server pushes lot events and bid results.
+  // Requires authorization.
+  rpc BidderSession(stream BidderSessionRequest) returns (stream BidderSessionResponse);
+}
+
+message PlaceBidRequest {
+  string lot_id = 1;
+  int32 amount_cents = 2;              // per lb
+  optional int32 max_amount_cents = 3; // per lb, enables proxy bidding
+  string idempotency_key = 4;          // Safe retries: same key = same result
+}
+message PlaceBidResponse {
+  Bid bid = 1;
+  Lot lot = 2;
+  bool is_leading = 3;                 // false if a proxy immediately outbid you
+}
+
+message WatchFloorRequest {}
+message WatchLotRequest {
+  string lot_id = 1;
+}
+message WatchLotResponse {
+  LotEvent event = 1;
+}
+
+message SubmitAbsenteeBookRequest {
+  string lot_id = 1;
+  int32 max_amount_cents = 2;          // per lb
+}
+message SubmitAbsenteeBookResponse {
+  int32 received = 1;
+  int32 accepted = 2;
+  repeated AbsenteeBidResult results = 3;
+}
+message AbsenteeBidResult {
+  string lot_id = 1;
+  bool accepted = 2;
+  string message = 3;
+}
+
+message BidderSessionRequest {
+  string correlation_id = 1;
+  oneof command {
+    SubscribeLots subscribe = 10;
+    PlaceBidRequest place_bid = 11;
+    Ping ping = 12;
+  }
+}
+message SubscribeLots {
+  repeated string lot_ids = 1;         // Empty = every lot
+}
+message Ping {}
+
+message BidderSessionResponse {
+  string correlation_id = 1;           // Echoes the command when applicable
+  oneof event {
+    LotEvent lot_event = 10;
+    BidResult bid_result = 11;
+    Pong pong = 12;
+    Bidder me = 13;                    // Fresh credit / exposure
+  }
+}
+message BidResult {
+  bool accepted = 1;
+  Bid bid = 2;
+  BidRejection rejection = 3;
+  string message = 4;
+}
+message Pong {
+  google.protobuf.Timestamp server_time = 1;
+}

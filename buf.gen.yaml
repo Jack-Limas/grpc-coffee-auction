@@ -1,0 +1,12 @@
+# Code generation: one contract -> TypeScript messages + service descriptors.
+# The generated code lives in packages/contracts and is shared by
+# the server, the browser app and the bots (Single Source of Truth).
+version: v2
+inputs:
+  - directory: proto
+plugins:
+  - local: protoc-gen-es
+    out: packages/contracts/src/gen
+    opt:
+      - target=ts
+      - import_extension=none

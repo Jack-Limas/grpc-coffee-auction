@@ -1,0 +1,31 @@
+{
+  "name": "cafe-subasta",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Real-time specialty coffee micro-lot auction built contract-first with gRPC (ConnectRPC + Protocol Buffers + HTTP/2).",
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "dev": "concurrently -n api,web -c yellow,cyan \"npm run dev -w @cafe/server\" \"npm run dev -w @cafe/web\"",
+    "generate": "buf generate",
+    "lint:proto": "buf lint",
+    "dev:server": "npm run dev -w @cafe/server",
+    "dev:web": "npm run dev -w @cafe/web",
+    "bots": "npm run start -w @cafe/bots --",
+    "build:server": "npm run build -w @cafe/server",
+    "build:web": "npm run build -w @cafe/web",
+    "typecheck": "npm run typecheck --workspaces --if-present",
+    "test": "npm run test --workspaces --if-present"
+  },
+  "devDependencies": {
+    "@bufbuild/buf": "^1.73.0",
+    "@bufbuild/protoc-gen-es": "^2.16.0",
+    "typescript": "~5.9.3",
+    "concurrently": "^9.2.1"
+  },
+  "engines": {
+    "node": ">=20.11"
+  }
+}

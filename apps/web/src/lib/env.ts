@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+/**
+ * NEXT_PUBLIC_* values are baked into the bundle at build time.
+ * Validating them with Zod turns a silent "undefined/api" bug into a clear error.
+ */
 const schema = z.object({
   NEXT_PUBLIC_API_URL: z
     .string()
